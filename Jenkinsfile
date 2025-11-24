@@ -1,34 +1,72 @@
 pipeline {
-  agent any
-  options { timestamps(); disableConcurrentBuilds() }
-  environment {
-    REGISTRY  = "${env.REGISTRY}"
-    BRANCH    = "${env.BRANCH_NAME}"
-    SHORT_SHA = sh(script: "git rev-parse --short=8 HEAD", returnStdout: true).trim()
-    IMAGE     = "${REGISTRY}/svc-python"
-    TAG_SHA   = "qa-${SHORT_SHA}"
-  }
-  stages {
-    stage('Checkout'){ steps { checkout scm } }
-    stage('Test'){ steps { sh 'pytest -q || true' } }
-    stage('Docker login'){
-      when { branch 'QA' }
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'container-registry', usernameVariable: 'U', passwordVariable: 'P')]){
-          sh 'echo "$P" | docker login -u "$U" --password-stdin'
+    agent any
+
+    options {
+        // Evita builds en paralelo que se pisen el docker-compose
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    environment {
+        PROJECT_ROOT   = '/opt/petradar-qa'
+        COMPOSE_FILE   = "${PROJECT_ROOT}/docker-compose.qa.yml"
+        DOCKER_BUILDKIT = '0'
+    }
+
+    stages {
+        stage('Solo rama QA') {
+            when {
+                expression { env.BRANCH_NAME == 'QA' }
+            }
+            steps {
+                echo "Ejecutando pipeline QA para ${env.JOB_NAME} / ${env.BRANCH_NAME}"
+            }
         }
-      }
+
+        stage('Sync repos QA') {
+            when { expression { env.BRANCH_NAME == 'QA' } }
+            steps {
+                sh '''
+                    set -e
+
+                    cd ${PROJECT_ROOT}/PetRadar.Web.API
+                    git fetch origin
+                    git checkout QA
+                    git pull origin QA
+
+                    cd ${PROJECT_ROOT}/PetRadar.DataProcessing.API
+                    git fetch origin
+                    git checkout QA
+                    git pull origin QA
+
+                    cd ${PROJECT_ROOT}/PetRadar.Web.UI
+                    git fetch origin
+                    git checkout QA
+                    git pull origin QA
+                '''
+            }
+        }
+
+        stage('Build imágenes QA') {
+            when { expression { env.BRANCH_NAME == 'QA' } }
+            steps {
+                sh '''
+                    set -e
+                    cd ${PROJECT_ROOT}
+                    DOCKER_BUILDKIT=${DOCKER_BUILDKIT} docker compose -f ${COMPOSE_FILE} build
+                '''
+            }
+        }
+
+        stage('Deploy stack QA') {
+            when { expression { env.BRANCH_NAME == 'QA' } }
+            steps {
+                sh '''
+                    set -e
+                    cd ${PROJECT_ROOT}
+                    DOCKER_BUILDKIT=${DOCKER_BUILDKIT} docker compose -f ${COMPOSE_FILE} up -d
+                '''
+            }
+        }
     }
-    stage('Build & Push (QA)'){
-      when { branch 'QA' }
-      steps {
-        sh """
-          docker build -t ${IMAGE}:${TAG_SHA} -t ${IMAGE}:qa-latest .
-          docker push ${IMAGE}:${TAG_SHA}
-          docker push ${IMAGE}:qa-latest
-        """
-      }
-    }
-    stage('Trigger deploy QA'){ when { branch 'QA' } steps { build job: 'infra-deploy-qa', wait: false } }
-  }
 }
