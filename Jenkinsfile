@@ -10,7 +10,7 @@ pipeline {
     environment {
         PROJECT_ROOT   = '/opt/petradar-qa'
         COMPOSE_FILE   = "${PROJECT_ROOT}/docker-compose.qa.yml"
-        DOCKER_BUILDKIT = '0'
+        DOCKER_BUILDKIT = '1'
     }
 
     stages {
