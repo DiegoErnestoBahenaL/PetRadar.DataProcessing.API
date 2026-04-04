@@ -6,3 +6,4 @@ opencv-python-headless
 onnx
 onnxruntime
 ultralytics
+python-multipart
