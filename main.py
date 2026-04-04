@@ -1,7 +1,9 @@
-#Testing CI/CD QA pipeline
 from typing import Union
-
-from fastapi import FastAPI
+import cv2
+from fastapi import FastAPI, UploadFile, File, HTTPException, status
+from ultralytics import YOLO
+import numpy as np
+from schemas.responses import ValidationResponse
 
 app = FastAPI()
 
@@ -11,6 +13,71 @@ def read_root():
     return {"Hello": "World, Built by Jenkins"}
 
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None):
-    return {"item_id": item_id, "q": q}
+VALID_CLASSES = {"cat", "dog"}
+# Load a pre-trained YOLOv8 model
+model = YOLO("models/yolov8s.onnx") 
+conf_threshold = 0.5  
+
+@app.post("/images/validatecatordog")
+def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
+
+    content = image.file.read()
+    
+    numpy_image = np.frombuffer(content, np.uint8)
+    img = cv2.imdecode(numpy_image, cv2.IMREAD_COLOR)
+
+    results = model.predict(source=img, verbose=False)
+    result = results[0]
+
+    if result.boxes is None or len(result.boxes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="No object detected in the image."
+        )
+    
+    # detectar IDs y cajas
+    names = result.names
+    boxes = result.boxes
+
+    # se busca el candidato con la área máxima que sea válida
+    best_candidate = None
+    best_area = 0
+
+
+    for i in range(len(boxes)):
+        cls_id = int(boxes.cls[i].item())
+        conf = float(boxes.conf[i].item())
+        cls_name = names[cls_id]
+
+        # filtrado por confianza
+        if conf < conf_threshold:
+            continue
+
+        # filtrado por clase válida
+        if cls_name not in VALID_CLASSES:
+            continue
+
+        # se calcula el area
+        x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+        area = max(0, x2 - x1) * max(0, y2 - y1)
+
+        # actualizar el mejor candidato
+        if area > best_area:
+            best_area = area
+            best_candidate = {
+                "class_name": cls_name,
+                "conf": conf,
+                "box": (int(x1), int(y1), int(x2), int(y2))
+            }
+
+    # descartar si no hay candidatos válidos
+    if best_candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="No object detected with sufficient confidence or valid class (cat/dog)."
+        )
+
+    return ValidationResponse(
+        detectedClass=best_candidate["class_name"],
+        confidence=best_candidate["conf"]
+    )
