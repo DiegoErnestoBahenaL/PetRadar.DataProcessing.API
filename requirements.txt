@@ -7,3 +7,4 @@ onnx
 onnxruntime
 ultralytics
 python-multipart
+tensorflow
