@@ -1,9 +1,15 @@
+import json
 from typing import Union
 import cv2
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from ultralytics import YOLO
 import numpy as np
 from schemas.responses import ValidationResponse
+import tensorflow as tf
+from pathlib import Path
+from PIL import Image
+import io
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -17,6 +23,45 @@ VALID_CLASSES = {"cat", "dog"}
 # Load a pre-trained YOLOv8 model
 model = YOLO("models/yolov8s.onnx") 
 conf_threshold = 0.5  
+
+CAT_BREED_CLASSIFIER_MODEL_PATH = Path("models/cat-breed-classifier/efficientnet-20clases-224px-f1_0.71.keras")
+CAT_BREED_CLASSIFIER_CLASS_NAMES_PATH = Path("models/cat-breed-classifier/class_names.json")
+
+DOG_BREED_CLASSIFIER_MODEL_PATH = Path("models/dog-breed-classifier/efficientnet-120razas-224px-f1_0.80.keras")
+DOG_BREED_CLASSIFIER_CLASS_NAMES_PATH = Path("models/dog-breed-classifier/class_names.json")
+
+with open(CAT_BREED_CLASSIFIER_CLASS_NAMES_PATH) as f:
+    cat_breed_class_names = json.load(f)
+
+with open(DOG_BREED_CLASSIFIER_CLASS_NAMES_PATH) as f:
+    dog_breed_class_names = json.load(f)
+
+IMG_SIZE = (224, 224)
+BACKBONE = "efficientnet"
+
+
+def get_preprocessing_fn(backbone: str):
+    if backbone == "efficientnet":
+        return tf.keras.applications.efficientnet.preprocess_input
+    return tf.keras.applications.mobilenet_v2.preprocess_input
+
+
+def preprocess_image(image_bytes: bytes, backbone: str) -> np.ndarray:
+    preprocess = get_preprocessing_fn(backbone)
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = img.resize(IMG_SIZE)
+    arr = np.array(img, dtype=np.float32)
+    arr = np.expand_dims(arr, axis=0)
+    arr = preprocess(arr)
+    return arr
+
+catBreedClassifier = tf.keras.models.load_model(
+    CAT_BREED_CLASSIFIER_MODEL_PATH, compile=False
+)
+
+dogBreedClassifier = tf.keras.models.load_model(
+    DOG_BREED_CLASSIFIER_MODEL_PATH, compile=False
+)
 
 @app.post("/images/validatecatordog")
 def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
@@ -81,3 +126,45 @@ def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
         detectedClass=best_candidate["class_name"],
         confidence=best_candidate["conf"]
     )
+
+@app.post("/images/{animalType}/extractcharacteristics")
+def extract_characteristics(animalType: str, image: UploadFile = File(...)):
+
+    top_k = 3
+
+
+    if animalType.lower() != "cat" and animalType.lower() != "dog":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Currently only 'cat' and 'dog' are supported for characteristic extraction."
+        )
+
+    content = image.file.read()
+    preprocessed_image = preprocess_image(content, BACKBONE)
+
+    if animalType.lower() == "cat":
+        probs = catBreedClassifier.predict(preprocessed_image, verbose=0)[0]
+        class_names = cat_breed_class_names
+    else:  # dog
+        probs = dogBreedClassifier.predict(preprocessed_image, verbose=0)[0]
+        class_names = dog_breed_class_names
+
+    sorted_idx = np.argsort(probs)[::-1]
+    best_idx = int(sorted_idx[0])
+    top_k_idx = sorted_idx[1: 1 + top_k]
+
+    predictions = [
+        {
+            "rank":       int(rank + 2),
+            "breed":      class_names[idx],
+            "confidence": round(float(probs[idx]), 4),
+            "percent":    f"{probs[idx]:.1%}",
+        }
+        for rank, idx in enumerate(top_k_idx)
+    ]
+
+    return JSONResponse({
+        "top_prediction": class_names[best_idx],
+        "confidence":     round(float(probs[best_idx]), 4),
+        "top_k":          predictions,
+    })
