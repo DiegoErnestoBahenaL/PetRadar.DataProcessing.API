@@ -67,9 +67,25 @@ dogBreedClassifier = tf.keras.models.load_model(
 def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
 
     content = image.file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty file uploaded (no bytes received)."
+        )
     
     numpy_image = np.frombuffer(content, np.uint8)
+    if numpy_image.size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty image buffer received."
+        )
+
     img = cv2.imdecode(numpy_image, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is not a valid decodable image."
+        )
 
     results = model.predict(source=img, verbose=False)
     result = results[0]
@@ -140,6 +156,11 @@ def extract_characteristics(animalType: str, image: UploadFile = File(...)):
         )
 
     content = image.file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty file uploaded (no bytes received)."
+        )
     preprocessed_image = preprocess_image(content, BACKBONE)
 
     if animalType.lower() == "cat":
