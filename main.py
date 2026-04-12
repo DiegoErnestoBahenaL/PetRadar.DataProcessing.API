@@ -21,7 +21,7 @@ def read_root():
 
 VALID_CLASSES = {"cat", "dog"}
 # Load a pre-trained YOLOv8 model
-model = YOLO("models/yolov8s.onnx") 
+model = YOLO("models/yolov8s-seg.onnx") 
 conf_threshold = 0.5  
 
 CAT_BREED_CLASSIFIER_MODEL_PATH = Path("models/cat-breed-classifier/efficientnet-20clases-224px-f1_0.71.keras")
