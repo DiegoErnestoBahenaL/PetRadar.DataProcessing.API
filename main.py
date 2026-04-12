@@ -4,7 +4,7 @@ import cv2
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from ultralytics import YOLO
 import numpy as np
-from schemas.responses import ValidationResponse
+from schemas.responses import ValidationResponse, CharacteristicsResponse, TopPrediction
 import tensorflow as tf
 from pathlib import Path
 from PIL import Image
@@ -143,11 +143,9 @@ def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
         confidence=best_candidate["conf"]
     )
 
-@app.post("/images/{animalType}/extractcharacteristics")
-def extract_characteristics(animalType: str, image: UploadFile = File(...)):
-
+@app.post("/images/{animalType}/extractcharacteristics", response_model=CharacteristicsResponse)
+def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> CharacteristicsResponse:
     top_k = 3
-
 
     if animalType.lower() != "cat" and animalType.lower() != "dog":
         raise HTTPException(
@@ -175,17 +173,16 @@ def extract_characteristics(animalType: str, image: UploadFile = File(...)):
     top_k_idx = sorted_idx[1: 1 + top_k]
 
     predictions = [
-        {
-            "rank":       int(rank + 2),
-            "breed":      class_names[idx],
-            "confidence": round(float(probs[idx]), 4),
-            "percent":    f"{probs[idx]:.1%}",
-        }
+        TopPrediction(
+            rank=int(rank + 2),
+            breed=class_names[idx],
+            confidence=round(float(probs[idx]), 4),
+        )
         for rank, idx in enumerate(top_k_idx)
     ]
 
-    return JSONResponse({
-        "top_prediction": class_names[best_idx],
-        "confidence":     round(float(probs[best_idx]), 4),
-        "top_k":          predictions,
-    })
+    return CharacteristicsResponse(
+        topPredictedBreed=class_names[best_idx],
+        confidence=round(float(probs[best_idx]), 4),
+        topPredictions=predictions,
+    )
