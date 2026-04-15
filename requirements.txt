@@ -8,3 +8,5 @@ onnxruntime
 ultralytics
 python-multipart
 tensorflow
+scikit-image
+scikit-learn
