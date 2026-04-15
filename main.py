@@ -4,12 +4,23 @@ import cv2
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from ultralytics import YOLO
 import numpy as np
-from schemas.responses import ValidationResponse, CharacteristicsResponse, TopPrediction
+from schemas.responses import (
+    ValidationResponse,
+    CharacteristicsResponse,
+    TopPrediction,
+    ColorInfo
+)
+from color_pattern_analyzer import (
+    extract_colors,
+    extract_glcm_features,
+    extract_lbp_features,
+    classify_pattern
+)
 import tensorflow as tf
 from pathlib import Path
 from PIL import Image
 import io
-from fastapi.responses import JSONResponse
+
 
 app = FastAPI()
 
@@ -146,10 +157,11 @@ def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
 @app.post("/images/{animalType}/extractcharacteristics", response_model=CharacteristicsResponse)
 def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> CharacteristicsResponse:
     top_k = 3
+    species = animalType.lower()
 
-    if animalType.lower() != "cat" and animalType.lower() != "dog":
+    if species != "cat" and species != "dog":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Currently only 'cat' and 'dog' are supported for characteristic extraction."
         )
 
@@ -159,17 +171,98 @@ def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> C
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Empty file uploaded (no bytes received)."
         )
+
+    # Decode image for YOLO segmentation and color/pattern analysis
+    numpy_image = np.frombuffer(content, np.uint8)
+    if numpy_image.size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty image buffer received."
+        )
+
+    img = cv2.imdecode(numpy_image, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is not a valid decodable image."
+        )
+
+    # Run YOLOv8s-seg to obtain segmentation mask
+    results = model.predict(source=img, verbose=False)
+    result = results[0]
+
+    if result.boxes is None or len(result.boxes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No object detected in the image."
+        )
+
+    if result.masks is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No segmentation mask produced."
+        )
+
+    # Find the largest-area valid detection (cat/dog above confidence threshold)
+    names = result.names
+    boxes = result.boxes
+    best_candidate = None
+    best_area = 0
+    best_box_idx = -1
+
+    for i in range(len(boxes)):
+        cls_id = int(boxes.cls[i].item())
+        conf = float(boxes.conf[i].item())
+        cls_name = names[cls_id]
+
+        # filtrado por confianza
+        if conf < conf_threshold:
+            continue
+
+        # filtrado por clase válida
+        if cls_name not in VALID_CLASSES:
+            continue
+
+        # se calcula el area
+        x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+        area = max(0, x2 - x1) * max(0, y2 - y1)
+
+        # actualizar el mejor candidato
+        if area > best_area:
+            best_box_idx = i
+            best_area = area
+            best_candidate = {
+                "class_name": cls_name,
+                "conf": conf,
+                "box": (int(x1), int(y1), int(x2), int(y2))
+            }
+
+        # descartar si no hay candidatos válidos
+    if best_candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="No object detected with sufficient confidence or valid class (cat/dog)."
+        )
+
+    # Extract binary mask at original image resolution
+    mask_data = result.masks.data[best_box_idx].cpu().numpy()
+    binary_mask = cv2.resize(
+        mask_data, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST
+    )
+    binary_mask = (binary_mask > 0.5).astype(np.uint8)
+
+    # Breed classification (uses original image bytes)
     preprocessed_image = preprocess_image(content, BACKBONE)
 
-    if animalType.lower() == "cat":
+    if species == "cat":
         probs = catBreedClassifier.predict(preprocessed_image, verbose=0)[0]
         class_names = cat_breed_class_names
-    else:  # dog
+    else:
         probs = dogBreedClassifier.predict(preprocessed_image, verbose=0)[0]
         class_names = dog_breed_class_names
 
     sorted_idx = np.argsort(probs)[::-1]
-    best_idx = int(sorted_idx[0])
+    best_breed_idx = int(sorted_idx[0])
     top_k_idx = sorted_idx[1: 1 + top_k]
 
     predictions = [
@@ -181,8 +274,27 @@ def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> C
         for rank, idx in enumerate(top_k_idx)
     ]
 
+    # Coat color extraction and pattern classification on masked image
+    colors_result = extract_colors(img, binary_mask)
+    glcm_features = extract_glcm_features(img, binary_mask)
+    lbp_features = extract_lbp_features(img, binary_mask)
+    pattern_result = classify_pattern(
+        img, binary_mask, species=species,
+        colors=colors_result, glcm=glcm_features, lbp=lbp_features,
+    )
+
+    colors_out = [
+        ColorInfo(
+            color=c["color"],
+            proportion=c["proportion"]
+        )
+        for c in colors_result
+    ]
+
     return CharacteristicsResponse(
-        topPredictedBreed=class_names[best_idx],
-        confidence=round(float(probs[best_idx]), 4),
+        topPredictedBreed=class_names[best_breed_idx],
+        colors=colors_out,
+        pattern=pattern_result,
+        confidence=round(float(probs[best_breed_idx]), 4),
         topPredictions=predictions,
     )
