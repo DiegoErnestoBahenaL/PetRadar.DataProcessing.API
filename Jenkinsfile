@@ -50,22 +50,28 @@ pipeline {
         stage('Build imágenes QA') {
             when { expression { env.BRANCH_NAME == 'QA' } }
             steps {
-                sh '''
-                    set -e
-                    cd ${PROJECT_ROOT}
-                    DOCKER_BUILDKIT=${DOCKER_BUILDKIT} docker compose -f ${COMPOSE_FILE} build
-                '''
+                withCredentials([string(credentialsId: 'firebaseCredentialsJson', variable: 'FIREBASE_CREDENTIALS_JSON_BASE64')]) {
+                    sh '''
+                        set -e
+                        cd ${PROJECT_ROOT}
+                        DOCKER_BUILDKIT=${DOCKER_BUILDKIT} FIREBASE_CREDENTIALS_JSON_BASE64="${FIREBASE_CREDENTIALS_JSON_BASE64}" \
+                            docker compose -f ${COMPOSE_FILE} build
+                    '''
+                }
             }
         }
 
         stage('Deploy stack QA') {
             when { expression { env.BRANCH_NAME == 'QA' } }
             steps {
-                sh '''
-                    set -e
-                    cd ${PROJECT_ROOT}
-                    DOCKER_BUILDKIT=${DOCKER_BUILDKIT} docker compose -f ${COMPOSE_FILE} up -d
-                '''
+                withCredentials([string(credentialsId: 'firebaseCredentialsJson', variable: 'FIREBASE_CREDENTIALS_JSON_BASE64')]) {
+                    sh '''
+                        set -e
+                        cd ${PROJECT_ROOT}
+                        DOCKER_BUILDKIT=${DOCKER_BUILDKIT} FIREBASE_CREDENTIALS_JSON_BASE64="${FIREBASE_CREDENTIALS_JSON_BASE64}" \
+                            docker compose -f ${COMPOSE_FILE} up -d
+                    '''
+                }
             }
         }
     }
