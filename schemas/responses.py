@@ -20,3 +20,7 @@ class CharacteristicsResponse(BaseModel):
     pattern: str
     confidence: float
     topPredictions: list[TopPrediction]
+
+class ConfigsResponse(BaseModel):
+    yoloConfThreshold: float
+    topKBreedPredictions: int

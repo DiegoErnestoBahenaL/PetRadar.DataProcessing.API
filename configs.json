@@ -1,0 +1,4 @@
+{
+    "yolo_conf_threshold": 0.5,
+    "top_k_breed_predictions": 3
+}
