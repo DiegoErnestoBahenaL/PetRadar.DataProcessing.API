@@ -4,7 +4,9 @@ import cv2
 from fastapi import FastAPI, UploadFile, File, HTTPException, status
 from ultralytics import YOLO
 import numpy as np
+from configs import Configs
 from schemas.responses import (
+    ConfigsResponse,
     ValidationResponse,
     CharacteristicsResponse,
     TopPrediction,
@@ -33,7 +35,7 @@ def read_root():
 VALID_CLASSES = {"cat", "dog"}
 # Load a pre-trained YOLOv8 model
 model = YOLO("models/yolov8s-seg.onnx") 
-conf_threshold = 0.5  
+
 
 CAT_BREED_CLASSIFIER_MODEL_PATH = Path("models/cat-breed-classifier/efficientnet-20clases-224px-f1_0.71.keras")
 CAT_BREED_CLASSIFIER_CLASS_NAMES_PATH = Path("models/cat-breed-classifier/class_names.json")
@@ -50,6 +52,14 @@ with open(DOG_BREED_CLASSIFIER_CLASS_NAMES_PATH) as f:
 IMG_SIZE = (224, 224)
 BACKBONE = "efficientnet"
 
+global config
+#load initial configs from JSON file
+with open("configs.json") as f:
+    config_data = json.load(f)
+
+config = Configs()
+config.yolo_conf_threshold = config_data.get("yolo_conf_threshold")
+config.top_k_breed_predictions = config_data.get("top_k_breed_predictions")
 
 def get_preprocessing_fn(backbone: str):
     if backbone == "efficientnet":
@@ -73,6 +83,42 @@ catBreedClassifier = tf.keras.models.load_model(
 dogBreedClassifier = tf.keras.models.load_model(
     DOG_BREED_CLASSIFIER_MODEL_PATH, compile=False
 )
+
+@app.get("/configs")
+def get_configs() -> ConfigsResponse:
+    return ConfigsResponse(
+        yoloConfThreshold=config.yolo_conf_threshold,
+        topKBreedPredictions=config.top_k_breed_predictions
+    )
+
+@app.put("/configs")
+def update_configs(yolo_conf_threshold: Union[float, None] = None, top_k_breed_predictions: Union[int, None] = None):
+    global config
+       
+    if yolo_conf_threshold is not None:
+        if not (0.0 <= yolo_conf_threshold <= 1.0):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="yolo_conf_threshold must be between 0.0 and 1.0"
+            )
+        config.yolo_conf_threshold = yolo_conf_threshold
+        
+    if top_k_breed_predictions is not None:
+        if top_k_breed_predictions < 1 or top_k_breed_predictions > 5:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="top_k_breed_predictions must be a positive integer between 1 and 5"
+            )
+        config.top_k_breed_predictions = top_k_breed_predictions
+
+    # Write updated configs back to JSON file
+    with open("configs.json", "w") as f:
+        json.dump({
+            "yolo_conf_threshold": config.yolo_conf_threshold,
+            "top_k_breed_predictions": config.top_k_breed_predictions
+        }, f, indent=4) 
+
+    return {"message": "Configs updated successfully"}
 
 @app.post("/images/validatecatordog")
 def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
@@ -122,7 +168,7 @@ def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
         cls_name = names[cls_id]
 
         # filtrado por confianza
-        if conf < conf_threshold:
+        if conf < config.yolo_conf_threshold:
             continue
 
         # filtrado por clase válida
@@ -156,7 +202,7 @@ def validate_cat_or_dog(image: UploadFile = File(...)) -> ValidationResponse:
 
 @app.post("/images/{animalType}/extractcharacteristics", response_model=CharacteristicsResponse)
 def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> CharacteristicsResponse:
-    top_k = 3
+
     species = animalType.lower()
 
     if species != "cat" and species != "dog":
@@ -216,7 +262,7 @@ def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> C
         cls_name = names[cls_id]
 
         # filtrado por confianza
-        if conf < conf_threshold:
+        if conf < config.yolo_conf_threshold:
             continue
 
         # filtrado por clase válida
@@ -263,7 +309,7 @@ def extract_characteristics(animalType: str, image: UploadFile = File(...)) -> C
 
     sorted_idx = np.argsort(probs)[::-1]
     best_breed_idx = int(sorted_idx[0])
-    top_k_idx = sorted_idx[1: 1 + top_k]
+    top_k_idx = sorted_idx[1: 1 + config.top_k_breed_predictions]
 
     predictions = [
         TopPrediction(
